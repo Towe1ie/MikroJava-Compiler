@@ -1,0 +1,23 @@
+package rs.ac.bg.etf.ln110181d;
+
+// Keywords
+terminal PROGRAM, BREAK, CLASS, ELSE, CONST, IF, NEW, PRINT, READ, RETURN, VOID, WHILE, EXTENDS;
+
+// Other tokens
+terminal String IDENT;
+terminal Integer NUMBER;
+terminal Character CHAR_CONST;
+terminal Boolean BOOL_CONST;
+terminal String STRING_CONST;
+
+// Operators
+terminal ADD, SUB, MUL, DIV, MOD, INC, DEC;
+terminal EQ, NEQ, GRT, GRTE, LESS, LESSE;
+terminal LAND, LOR;
+terminal ASSIGN;
+terminal SEMI, COMMA;
+terminal LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE;
+
+non terminal Program;
+
+Program ::= PROGRAM LBRACE RBRACE;
