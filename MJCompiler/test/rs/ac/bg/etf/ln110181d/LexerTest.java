@@ -1,7 +1,6 @@
 package rs.ac.bg.etf.ln110181d;
 
 import java.io.*;
-import java.net.URL;
 
 import java_cup.runtime.Symbol;
 
