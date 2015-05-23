@@ -23,7 +23,7 @@ import java_cup.runtime.Symbol;
 %xstate COMMENT
 
 %eofval{
-	return newSymbol(sym.EOF);
+	return newSymbol(sym.EOF, yytext());
 %eofval}
 
 %%
@@ -62,6 +62,8 @@ import java_cup.runtime.Symbol;
 "<" 		{ return newSymbol(sym.LESS, yytext()); }
 "<=" 		{ return newSymbol(sym.LESSE, yytext()); }
 
+"."			{ return newSymbol(sym.DOT, yytext()); }
+
 "&&" 		{ return newSymbol(sym.LAND, yytext()); }
 "||" 		{ return newSymbol(sym.LOR, yytext()); }
 
@@ -81,7 +83,11 @@ import java_cup.runtime.Symbol;
 <COMMENT> .			{ yybegin(COMMENT); }
 <COMMENT> "\r\n" 	{ yybegin(YYINITIAL); }
 
+(true|false)					{ return newSymbol(sym.BOOL_CONST, new Boolean(yytext())); }
 [0-9]+							{ return newSymbol(sym.NUMBER, new Integer(yytext())); }
 ([a-z]|[A-Z]|_)[a-z|A-Z|0-9|_]*	{ return newSymbol(sym.IDENT, yytext()); }
+"'"."'"							{ return newSymbol(sym.CHAR_CONST, yytext().charAt(1)); }
+\"([^\"]|\\\")*\"		{ return newSymbol(sym.STRING_CONST, yytext().substring(1, yytext().length() - 1)); }
+
 
 . { System.err.println("Leksicka greska (" + yytext() + ") u liniji " + (yyline + 1) + " i koloni " + yycolumn); }

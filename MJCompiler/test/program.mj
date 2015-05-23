@@ -1,11 +1,13 @@
-program MJProgram
-	int x, y;
-	!
-{
-	void main()
+program TestProgam
+	const double pi = 2;
+	const int a = 2, b = 3, c = 5;
+	char a;
+	const char c = 'b';
+	int x, y, c;
+	
+	class KlasaA
 	{
-		print(1);
-		print(2);
-		x = y + 3 + a;
 	}
+{
+	
 }

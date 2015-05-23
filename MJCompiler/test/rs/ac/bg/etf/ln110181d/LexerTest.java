@@ -22,8 +22,8 @@ public class LexerTest
 	{
 		Logger log = Logger.getLogger(LexerTest.class);
 		
-		File sourceCodeFile = new File("test/program.mj");
-		
+		File sourceCodeFile = new File("test/test10.mj");
+
 		try (BufferedReader br = new BufferedReader(new FileReader(sourceCodeFile));)
 		{
 			Yylex lexer = new Yylex(br);

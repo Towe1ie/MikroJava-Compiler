@@ -1,5 +1,57 @@
 package rs.ac.bg.etf.ln110181d;
 
+import java_cup.runtime.*;
+import org.apache.log4j.Logger;
+import rs.ac.bg.etf.ln110181d.util.*;
+
+parser code
+{:
+	Logger log = Logger.getLogger(getClass());
+
+	public void report_fatal_error(String message, Object info) throws java.lang.Exception
+	{
+		done_parsing();
+		report_error(message, info);
+	}
+
+	public void syntax_error(Symbol cur_token)
+	{
+		report_error("\nSintaksna greska", cur_token);
+	}
+
+	public void unrecovered_syntax_error(Symbol cur_token) throws java.lang.Exception
+	{
+		report_fatal_error("Fatalna greska, parsiranje se ne moze nastviti", cur_token);
+	}
+
+	public void report_error(String message, Object info)
+	{
+		dump_stack();
+		StringBuilder msg = new StringBuilder(message);
+		if (info instanceof Symbol)
+			msg.append("na liniji ").append(((Symbol)info).left);
+		log.error(msg.toString());
+	}
+:}
+
+scan with
+{:
+	Symbol s = this.getScanner().next_token();
+	if (s != null)
+	{
+		if (s.value != null)
+		{
+			log.info(s.toString() + "(" + Utils.symToString(s.sym) + ") " + s.value.toString());
+		}
+		else
+		{
+			log.info(s.toString() + "(" + Utils.symToString(s.sym) + ") " + " NULLL!!!");
+		}
+	}
+
+	return s;
+:}
+
 // Keywords
 terminal PROGRAM, BREAK, CLASS, ELSE, CONST, IF, NEW, PRINT, READ, RETURN, VOID, WHILE, EXTENDS;
 
@@ -15,9 +67,68 @@ terminal ADD, SUB, MUL, DIV, MOD, INC, DEC;
 terminal EQ, NEQ, GRT, GRTE, LESS, LESSE;
 terminal LAND, LOR;
 terminal ASSIGN;
-terminal SEMI, COMMA;
+terminal SEMI, COMMA, DOT;
 terminal LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE;
 
-non terminal Program;
+non terminal Program, Declarations, DeclList, Decl;
+non terminal MethodDeclList, MethodDecl, RetType;
+non terminal FormalParamsOpt;
+non terminal Value;
+non terminal ConstDeclarations, ConstDeclList, ConstDecl;
+non terminal VarDeclarations, VarDeclList, VarDecl, VarDeclLine, VarDeclSequence, VarDeclOpt;
+non terminal ClassDecl, ExtendsOpt, ClassVarDeclarations, ClassVarDeclList;
 
-Program ::= PROGRAM LBRACE RBRACE;
+Program ::= PROGRAM IDENT Declarations LBRACE MethodDeclList RBRACE;
+
+Declarations ::= DeclList | /* epsilon */;
+
+DeclList ::= DeclList Decl
+			 |
+			 Decl
+			 ;
+
+Decl ::= ConstDeclarations | VarDeclLine | ClassDecl;
+
+ConstDeclarations ::= CONST IDENT ConstDeclList SEMI;
+
+ConstDeclList ::= ConstDeclList COMMA ConstDecl
+				  |
+				  ConstDecl
+				  ;
+
+ConstDecl ::= IDENT ASSIGN Value;
+
+Value ::= NUMBER | CHAR_CONST | BOOL_CONST | STRING_CONST;
+
+// Variables
+VarDeclOpt ::= VarDeclList | /* epsilon */;
+
+VarDeclList ::= VarDeclList VarDeclLine
+				|
+				VarDeclLine
+				;
+
+VarDeclLine ::= IDENT VarDeclSequence SEMI;
+
+VarDeclSequence ::= VarDeclSequence COMMA VarDecl
+					|
+					VarDecl
+			    	;
+				
+VarDecl ::= IDENT | IDENT LBRACKET RBRACKET;
+
+// Class
+ClassDecl ::= CLASS IDENT ExtendsOpt LBRACE VarDeclOpt RBRACE;
+
+ExtendsOpt ::= EXTENDS IDENT | /* epsilon */;
+
+
+// Method					 
+MethodDeclList ::= MethodDeclList MethodDecl
+				   |
+				   MethodDecl
+				   ;
+				   
+MethodDecl ::= RetType IDENT LPAREN FormalParamsOpt RPAREN VarDeclOpt LBRACE RBRACE;
+
+RetType ::= IDENT | VOID;
