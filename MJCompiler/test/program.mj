@@ -1,13 +1,8 @@
 program TestProgam
-	const double pi = 2;
-	const int a = 2, b = 3, c = 5;
-	char a;
-	const char c = 'b';
-	int x, y, c;
-	
-	class KlasaA
-	{
-	}
 {
-	
+	int main(int a, int h)
+		int a, b, c, d;
+	{
+		a(2, 3);
+	}
 }

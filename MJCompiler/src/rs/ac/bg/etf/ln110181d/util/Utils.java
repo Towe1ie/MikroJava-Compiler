@@ -97,6 +97,9 @@ public class Utils
 			case sym.MUL:
 				s = "MUL";
 				break;
+			case sym.EQ:
+				s = "EQ";
+				break;
 			case sym.NEQ:
 				s = "NEQ";
 				break;

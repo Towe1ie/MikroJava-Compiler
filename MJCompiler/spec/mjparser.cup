@@ -16,7 +16,7 @@ parser code
 
 	public void syntax_error(Symbol cur_token)
 	{
-		report_error("\nSintaksna greska", cur_token);
+		report_error("\nSintaksna greska ", cur_token);
 	}
 
 	public void unrecovered_syntax_error(Symbol cur_token) throws java.lang.Exception
@@ -26,10 +26,13 @@ parser code
 
 	public void report_error(String message, Object info)
 	{
-		dump_stack();
+		//dump_stack();
 		StringBuilder msg = new StringBuilder(message);
 		if (info instanceof Symbol)
-			msg.append("na liniji ").append(((Symbol)info).left);
+		{
+			msg.append("na liniji ").append(((Symbol)info).left).append(" i koloni ").append(((Symbol)info).right);
+			msg.append("\nNeocekivan simbol " + (((Symbol)info).value));
+		}
 		log.error(msg.toString());
 	}
 :}
@@ -41,7 +44,7 @@ scan with
 	{
 		if (s.value != null)
 		{
-			log.info(s.toString() + "(" + Utils.symToString(s.sym) + ") " + s.value.toString());
+			log.info(s.toString() + "(" + Utils.symToString(s.sym) + ") " + " " + s.value.toString());
 		}
 		else
 		{
@@ -70,65 +73,217 @@ terminal ASSIGN;
 terminal SEMI, COMMA, DOT;
 terminal LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE;
 
-non terminal Program, Declarations, DeclList, Decl;
-non terminal MethodDeclList, MethodDecl, RetType;
-non terminal FormalParamsOpt;
-non terminal Value;
-non terminal ConstDeclarations, ConstDeclList, ConstDecl;
-non terminal VarDeclarations, VarDeclList, VarDecl, VarDeclLine, VarDeclSequence, VarDeclOpt;
-non terminal ClassDecl, ExtendsOpt, ClassVarDeclarations, ClassVarDeclList;
+// Program
+non terminal Program;
+non terminal GlobalDeclarationsOpt, GlobalDeclList, GlobalDecl;
 
-Program ::= PROGRAM IDENT Declarations LBRACE MethodDeclList RBRACE;
-
-Declarations ::= DeclList | /* epsilon */;
-
-DeclList ::= DeclList Decl
-			 |
-			 Decl
-			 ;
-
-Decl ::= ConstDeclarations | VarDeclLine | ClassDecl;
-
-ConstDeclarations ::= CONST IDENT ConstDeclList SEMI;
-
-ConstDeclList ::= ConstDeclList COMMA ConstDecl
-				  |
-				  ConstDecl
-				  ;
-
-ConstDecl ::= IDENT ASSIGN Value;
-
-Value ::= NUMBER | CHAR_CONST | BOOL_CONST | STRING_CONST;
+// Constants
+non terminal ConstDeclLine, ConstDeclSequence, ConstDecl;
 
 // Variables
-VarDeclOpt ::= VarDeclList | /* epsilon */;
+non terminal GlobalVarDeclLine, GlobalVarDeclSequence;
+non terminal LocalVarDeclOpt, LocalVarDeclList, LocalVarDeclLine;
+non terminal FieldsDeclOpt, FieldsDeclList, FieldDeclLine;
+non terminal VarDecl, VarDeclSequence;
 
-VarDeclList ::= VarDeclList VarDeclLine
-				|
-				VarDeclLine
-				;
+// Methods
+non terminal MethodDeclOpt, MethodDeclList, MethodDecl, RetType;
+non terminal FormalParamsOpt, FormalParamsList, FormalParam;
+non terminal ActualParamsOpt, ActualParamsList;
 
-VarDeclLine ::= IDENT VarDeclSequence SEMI;
+// Classes
+non terminal ClassDecl, ExtendsOpt, ClassMethodDeclOpt;
 
-VarDeclSequence ::= VarDeclSequence COMMA VarDecl
-					|
-					VarDecl
-			    	;
-				
-VarDecl ::= IDENT | IDENT LBRACKET RBRACKET;
+// Statements and Expressions
+non terminal Statement, StatementListOpt, StatementList, OpenStatement, ClosedStatement, SimpleStatement;
+non terminal Designator, DesignatorRight, DesignatorListOpt, DesignatorList, DesignatorPart;
+non terminal Value, Expr, Term, TermList, Factor, Condition, CondTerm, CondFact;
+non terminal Addop, Mulop, Relop;
 
-// Class
-ClassDecl ::= CLASS IDENT ExtendsOpt LBRACE VarDeclOpt RBRACE;
+// ************ RULES ************
 
-ExtendsOpt ::= EXTENDS IDENT | /* epsilon */;
+/* 1   */ Program ::= PROGRAM IDENT GlobalDeclarationsOpt LBRACE MethodDeclOpt RBRACE;
 
+// **** Global declarations *****
+/* 2   */ GlobalDeclarationsOpt ::= GlobalDeclList;
+/* 3   */ GlobalDeclarationsOpt ::= /* epsilon */; 
 
-// Method					 
-MethodDeclList ::= MethodDeclList MethodDecl
-				   |
-				   MethodDecl
-				   ;
-				   
-MethodDecl ::= RetType IDENT LPAREN FormalParamsOpt RPAREN VarDeclOpt LBRACE RBRACE;
+/* 4   */ GlobalDeclList ::= GlobalDeclList GlobalDecl;
+/* 5   */ GlobalDeclList ::= GlobalDecl;
 
-RetType ::= IDENT | VOID;
+/* 6   */ GlobalDecl ::= GlobalVarDeclLine;
+/* 7   */ GlobalDecl ::= ConstDeclLine;
+/* 8   */ GlobalDecl ::= ClassDecl;
+
+// **** Const declarations ****
+/* 8   */ ConstDeclLine ::= CONST IDENT ConstDeclSequence SEMI;
+
+/* 9   */ ConstDeclSequence ::= ConstDeclSequence COMMA ConstDecl;
+/* 10  */ ConstDeclSequence ::= ConstDecl;
+
+/* 11  */ ConstDecl ::= error {: parser.log.debug("Pogresna deklaracija konstante"); :};				  				  
+/* 12  */ ConstDecl ::= IDENT ASSIGN Value;
+
+// ***** Var declarations ****
+/* 13  */ GlobalVarDeclLine ::= IDENT GlobalVarDeclSequence SEMI;
+
+/* 14  */ GlobalVarDeclSequence ::= GlobalVarDeclSequence COMMA VarDecl;
+/* 15  */ GlobalVarDeclSequence ::= VarDecl;
+/* 16  */ GlobalVarDeclSequence ::= error {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
+
+/* 17  */ VarDeclSequence ::= VarDeclSequence COMMA VarDecl;
+/* 18  */ VarDeclSequence ::= VarDecl;
+		
+/* 19  */ VarDecl ::= IDENT;
+/* 20  */ VarDecl ::= IDENT LBRACKET RBRACKET;
+
+/* 21  */ Value ::= NUMBER;
+/* 22  */ Value ::= CHAR_CONST;
+/* 23  */ Value ::= BOOL_CONST;
+/* 24  */ Value ::= STRING_CONST;
+
+// **** Class Rules ****
+/* 25  */ ClassDecl ::= CLASS IDENT ExtendsOpt LBRACE FieldsDeclOpt ClassMethodDeclOpt RBRACE;
+
+/* 26  */ ExtendsOpt ::= EXTENDS IDENT;
+/* 27  */ ExtendsOpt ::= error {: parser.log.debug("Greska u prosirenju natklase"); :};
+/* 28  */ ExtendsOpt ::= /* epsilon */;
+
+/* 29  */ FieldsDeclOpt ::= FieldsDeclList;
+/* 30  */ FieldsDeclOpt ::= /* epsilon */;
+
+/* 31  */ FieldsDeclList ::= FieldDeclLine FieldsDeclList;
+/* 32  */ FieldsDeclList ::= FieldDeclLine;
+/* 33  */ FieldsDeclList ::= error {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
+/* 34  */ FieldsDeclList ::= error SEMI {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
+
+/* 35  */ FieldDeclLine ::= IDENT VarDeclSequence SEMI;
+
+/* 36  */ ClassMethodDeclOpt ::= LBRACE MethodDeclOpt RBRACE;
+/* 37  */ ClassMethodDeclOpt ::= /* epsilon */;
+
+// **** Global Method Declarations ****
+/* 38  */ MethodDeclOpt ::= MethodDeclList;
+/* 39  */ MethodDeclOpt ::= /* epsilon */;
+
+/* 40  */ MethodDeclList ::= MethodDeclList MethodDecl;
+/* 41  */ MethodDeclList ::= MethodDecl;
+
+/* 42  */ MethodDecl ::= RetType IDENT LPAREN FormalParamsOpt RPAREN LocalVarDeclOpt LBRACE StatementListOpt RBRACE;
+
+// **** Local Var Declarations ****
+/* 43  */ LocalVarDeclOpt ::= LocalVarDeclList;
+/* 44  */ LocalVarDeclOpt ::= /* epsilon */;
+
+/* 45  */ LocalVarDeclList ::= LocalVarDeclLine LocalVarDeclList;
+/* 46  */ LocalVarDeclList ::= LocalVarDeclLine;
+/* 47  */ LocalVarDeclList ::= IDENT error SEMI {: parser.log.debug("Pogresna deklaracija promelnjive"); :};
+/* 48  */ LocalVarDeclList ::= IDENT error {: parser.log.debug("Pogresna deklaracija promelnjive"); :};
+
+/* 49  */ LocalVarDeclLine ::= IDENT VarDeclSequence SEMI;
+
+/* 50  */ RetType ::= VOID;
+/* 51  */ RetType ::= IDENT;
+
+// **** Formal Params Rules ****
+/* 52  */ FormalParamsOpt ::= FormalParamsList;
+/* 53  */ FormalParamsOpt ::= /* epsilon */;
+
+/* 54  */ FormalParamsList ::= FormalParamsList COMMA FormalParam;
+/* 55  */ FormalParamsList ::= FormalParam;
+/* 56  */ FormalParamsList ::= error {: parser.log.debug("Pogresna deklaracija formalnih parametara"); :};
+
+/* 57  */ FormalParam ::= IDENT IDENT;
+/* 58  */ FormalParam ::= IDENT IDENT LBRACKET RBRACKET;
+
+// **** Statement Rules ****
+/* 59  */ StatementListOpt ::= StatementList;
+/* 60  */ StatementListOpt ::= /* epsilon */;
+
+/* 61  */ StatementList ::= StatementList Statement;
+/* 62  */ StatementList ::= Statement;
+
+/* 63  */ Statement ::= OpenStatement;
+/* 64  */ Statement ::= ClosedStatement;
+
+/* 65  */ OpenStatement ::= IF LPAREN Condition RPAREN Statement;
+/* 66  */ OpenStatement ::= IF LPAREN Condition RPAREN ClosedStatement ELSE OpenStatement;
+/* 67  */ OpenStatement ::= WHILE LPAREN Condition RPAREN OpenStatement;
+
+/* 68  */ ClosedStatement ::= SimpleStatement;
+/* 69  */ ClosedStatement ::= IF LPAREN Condition RPAREN ClosedStatement ELSE ClosedStatement;
+/* 70  */ ClosedStatement ::= WHILE LPAREN Condition RPAREN ClosedStatement;
+
+/* 71  */ Condition ::= CondTerm LOR CondTerm;
+/* 72  */ Condition ::= CondTerm;
+/* 73  */ Condition ::= error {: parser.log.debug("Greska u uslovu!"); :};
+
+/* 74  */ CondTerm ::= CondTerm LAND CondFact;
+/* 75  */ CondTerm ::= CondFact;
+			 
+/* 76  */ CondFact ::= Expr Relop Expr;
+/* 77  */ CondFact ::= Expr;
+
+/* 78  */ SimpleStatement ::= Designator DesignatorRight SEMI;
+/* 79  */ SimpleStatement ::= BREAK SEMI;
+/* 80  */ SimpleStatement ::= RETURN SEMI;
+/* 81  */ SimpleStatement ::= RETURN Expr SEMI;
+/* 82  */ SimpleStatement ::= READ LPAREN Designator RPAREN SEMI;
+/* 83  */ SimpleStatement ::= READ LPAREN error RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije read!"); :};
+/* 84  */ SimpleStatement ::= PRINT LPAREN Expr RPAREN SEMI;
+/* 85  */ SimpleStatement ::= PRINT LPAREN error RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije print!"); :};
+/* 86  */ SimpleStatement ::= PRINT LPAREN Expr COMMA NUMBER RPAREN SEMI;
+/* 87  */ SimpleStatement ::= PRINT LPAREN error COMMA NUMBER RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije print!"); :};
+/* 88  */ SimpleStatement ::= LBRACE StatementListOpt RBRACE;
+
+/* 89  */ Designator ::= IDENT DesignatorListOpt;
+
+/* 90  */ DesignatorListOpt ::= DesignatorList;
+/* 91  */ DesignatorListOpt ::= /* epsilon */;
+
+/* 92  */ DesignatorList ::= DesignatorList DesignatorPart;
+/* 93  */ DesignatorList ::= DesignatorPart;
+
+/* 94  */ DesignatorPart ::= DOT IDENT;
+/* 95  */ DesignatorPart ::= LBRACKET Expr RBRACKET;
+/* 96  */ DesignatorPart ::= LBRACKET error RBRACKET {: parser.log.debug("Greska u izrazu za indeksiranje!"); :};
+
+/* 97  */ DesignatorRight ::= ASSIGN Expr;
+/* 98  */ DesignatorRight ::= ASSIGN error {: parser.log.debug("Greska u dodeli vrednosti!"); :};
+/* 99  */ DesignatorRight ::= LPAREN ActualParamsOpt RPAREN;
+/* 100 */ DesignatorRight ::= LPAREN error {: parser.log.debug("Greska pri pozivu funkcije!"); :};
+/* 101 */ DesignatorRight ::= INC;
+/* 102 */ DesignatorRight ::= DEC;
+
+/* 103 */ Expr ::= SUB TermList;
+/* 104 */ Expr ::= TermList;
+
+/* 105 */ TermList ::= TermList Addop Term;
+/* 106 */ TermList ::= Term;
+
+/* 107 */ Term ::= Term Mulop Factor;
+/* 108 */ Term ::= Factor;
+
+/* 109 */ Factor ::= Designator;
+/* 110 */ Factor ::= Designator LPAREN ActualParamsOpt RPAREN;
+/* 111 */ Factor ::= Value;
+/* 112 */ Factor ::= NEW IDENT;
+/* 113 */ Factor ::= NEW IDENT LBRACKET Expr RBRACKET;
+/* 114 */ Factor ::= NEW IDENT LBRACKET error RBRACKET {: parser.log.debug("Greska u izrazu za alociranje!"); :};
+/* 115 */ Factor ::= LPAREN Expr RPAREN;
+
+/* 116 */ ActualParamsOpt ::= ActualParamsList;
+/* 117 */ ActualParamsOpt ::= /* epsilon */;
+/* 118 */ ActualParamsOpt ::= error {: parser.log.debug("Greska u parametrima u pozivu funkcije!"); :};
+
+/* 119 */ ActualParamsList ::= ActualParamsList COMMA Expr;
+/* 120 */ ActualParamsList ::= Expr;
+
+/* 121 */ Addop ::= ADD;
+/* 122 */ Addop ::= SUB;
+
+/* 123 */ Mulop ::= MUL;
+/* 124 */ Mulop ::= DIV;
+/* 125 */ Mulop ::= MOD;
+		 
+/* 126 */ Relop ::= EQ | NEQ | GRT | GRTE | LESS | LESSE;
