@@ -3,25 +3,29 @@ package rs.ac.bg.etf.ln110181d;
 import java_cup.runtime.*;
 import org.apache.log4j.Logger;
 import rs.ac.bg.etf.ln110181d.util.*;
+import rs.etf.pp1.symboltable.*;
+import rs.etf.pp1.symboltable.concepts.*;
 
 parser code
 {:
 	Logger log = Logger.getLogger(getClass());
 
-	public void report_fatal_error(String message, Object info) throws java.lang.Exception
-	{
-		done_parsing();
-		report_error(message, info);
-	}
-
 	public void syntax_error(Symbol cur_token)
 	{
-		report_error("\nSintaksna greska ", cur_token);
+		int line = ((Symbol)cur_token).left;
+		log.error("Syntax error (line " + line + ") Unexpected symbol " + (((Symbol)cur_token).value));
+		//report_error("\nSintaksna greska ", cur_token);
 	}
 
 	public void unrecovered_syntax_error(Symbol cur_token) throws java.lang.Exception
 	{
-		report_fatal_error("Fatalna greska, parsiranje se ne moze nastviti", cur_token);
+		report_fatal_error("Unrecovered syntax error", cur_token);
+	}
+
+	public void report_fatal_error(String message, Object info) throws java.lang.Exception
+	{
+		done_parsing();
+		report_error("Fatal error" + message, info);
 	}
 
 	public void report_error(String message, Object info)
@@ -30,10 +34,24 @@ parser code
 		StringBuilder msg = new StringBuilder(message);
 		if (info instanceof Symbol)
 		{
-			msg.append("na liniji ").append(((Symbol)info).left).append(" i koloni ").append(((Symbol)info).right);
-			msg.append("\nNeocekivan simbol " + (((Symbol)info).value));
+			msg.append("(line ").append(((Symbol)info).left).append(")");
+			msg.append(" Unexpected symbol " + (((Symbol)info).value));
 		}
 		log.error(msg.toString());
+	}
+	
+	public void reportSemanticError(String message, int line)
+	{
+		StringBuilder sb = new StringBuilder();
+		sb.append("Semantic error (line ").append(line + ") : ").append(message);
+		log.error(sb.toString());
+	}
+
+	public void reportRecoveredSyntaxError(String message, int line)
+	{
+		StringBuilder sb = new StringBuilder();
+		sb.append("Recovery syntax error (line ").append(line + ") : ").append(message);
+		log.error(sb.toString());
 	}
 :}
 
@@ -53,6 +71,40 @@ scan with
 	}
 
 	return s;
+:}
+
+init with
+{:
+	MyTab.init(); // Universe scope
+:}
+
+action code
+{:
+	Obj currentTypeObj = MyTab.noObj;
+	Obj currentClassObj = MyTab.noObj;
+
+	Obj currentRetType = null;
+	boolean returnFound = false;
+
+	class Constant
+	{
+		public Object value;
+		public Obj obj;
+		
+		public Constant(Object value, Obj obj)
+		{
+			this.value = value;
+			this.obj = obj;
+		}
+	}
+
+	public Obj insertSymbol(int kind, String name, Struct type)
+	{
+		Obj obj = MyTab.find(name);		
+		if (obj != MyTab.noObj)
+			parser.log.error("Simbol " + name + " vec postoji u trenutnom opsegu!");
+		return MyTab.insert(kind, name, type);
+	}
 :}
 
 // Keywords
@@ -75,10 +127,12 @@ terminal LPAREN, RPAREN, LBRACKET, RBRACKET, LBRACE, RBRACE;
 
 // Program
 non terminal Program;
+non terminal Obj ProgramName;
 non terminal GlobalDeclarationsOpt, GlobalDeclList, GlobalDecl;
 
 // Constants
 non terminal ConstDeclLine, ConstDeclSequence, ConstDecl;
+non terminal Obj Type;
 
 // Variables
 non terminal GlobalVarDeclLine, GlobalVarDeclSequence;
@@ -90,19 +144,27 @@ non terminal VarDecl, VarDeclSequence;
 non terminal MethodDeclOpt, MethodDeclList, MethodDecl, RetType;
 non terminal FormalParamsOpt, FormalParamsList, FormalParam;
 non terminal ActualParamsOpt, ActualParamsList;
+non terminal Obj MethodName;
 
 // Classes
 non terminal ClassDecl, ExtendsOpt, ClassMethodDeclOpt;
+non terminal Obj ClassName;
 
 // Statements and Expressions
 non terminal Statement, StatementListOpt, StatementList, OpenStatement, ClosedStatement, SimpleStatement;
 non terminal Designator, DesignatorRight, DesignatorListOpt, DesignatorList, DesignatorPart;
-non terminal Value, Expr, Term, TermList, Factor, Condition, CondTerm, CondFact;
+non terminal Expr, Term, TermList, Factor, Condition, CondTerm, CondFact;
 non terminal Addop, Mulop, Relop;
+
+non terminal Constant Value;
 
 // ************ RULES ************
 
-/* 1   */ Program ::= PROGRAM IDENT GlobalDeclarationsOpt LBRACE MethodDeclOpt RBRACE;
+/* 1   */ Program ::= PROGRAM ProgramName GlobalDeclarationsOpt LBRACE MethodDeclOpt RBRACE
+{:
+	MyTab.closeScope();
+	MyTab.dump();
+:};
 
 // **** Global declarations *****
 /* 2   */ GlobalDeclarationsOpt ::= GlobalDeclList;
@@ -116,20 +178,29 @@ non terminal Addop, Mulop, Relop;
 /* 8   */ GlobalDecl ::= ClassDecl;
 
 // **** Const declarations ****
-/* 8   */ ConstDeclLine ::= CONST IDENT ConstDeclSequence SEMI;
+/* 8   */ ConstDeclLine ::= CONST Type ConstDeclSequence SEMI
+{:
+	currentTypeObj = MyTab.noObj;
+:};
 
 /* 9   */ ConstDeclSequence ::= ConstDeclSequence COMMA ConstDecl;
 /* 10  */ ConstDeclSequence ::= ConstDecl;
 
-/* 11  */ ConstDecl ::= error {: parser.log.debug("Pogresna deklaracija konstante"); :};				  				  
-/* 12  */ ConstDecl ::= IDENT ASSIGN Value;
+/* 11  */ ConstDecl ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of constant", eleft); :};
+/* 12  */ ConstDecl ::= IDENT ASSIGN Value:info
+{:
+	if (!info.obj.getType().assignableTo(currentTypeObj.getType()))
+	{
+		parser.reportSemanticError("Type " + info.obj.getName() + " not assignable to type " + currentTypeObj.getName(), infoleft);
+	}
+:};
 
 // ***** Var declarations ****
 /* 13  */ GlobalVarDeclLine ::= IDENT GlobalVarDeclSequence SEMI;
 
 /* 14  */ GlobalVarDeclSequence ::= GlobalVarDeclSequence COMMA VarDecl;
 /* 15  */ GlobalVarDeclSequence ::= VarDecl;
-/* 16  */ GlobalVarDeclSequence ::= error {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
+/* 16  */ GlobalVarDeclSequence ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
 
 /* 17  */ VarDeclSequence ::= VarDeclSequence COMMA VarDecl;
 /* 18  */ VarDeclSequence ::= VarDecl;
@@ -137,16 +208,28 @@ non terminal Addop, Mulop, Relop;
 /* 19  */ VarDecl ::= IDENT;
 /* 20  */ VarDecl ::= IDENT LBRACKET RBRACKET;
 
-/* 21  */ Value ::= NUMBER;
-/* 22  */ Value ::= CHAR_CONST;
-/* 23  */ Value ::= BOOL_CONST;
-/* 24  */ Value ::= STRING_CONST;
+/* 21  */ Value ::= NUMBER:value 		{: RESULT = new Constant(value, MyTab.intObj); :};
+/* 22  */ Value ::= CHAR_CONST:value 	{: RESULT = new Constant(value, MyTab.charObj); :};
+/* 23  */ Value ::= BOOL_CONST:value 	{: RESULT = new Constant(value, MyTab.boolObj); :};
+/* 24  */ Value ::= STRING_CONST:value	{: RESULT = new Constant(value, MyTab.stringObj); :};
 
 // **** Class Rules ****
-/* 25  */ ClassDecl ::= CLASS IDENT ExtendsOpt LBRACE FieldsDeclOpt ClassMethodDeclOpt RBRACE;
+/* 25  */ ClassDecl ::= CLASS ClassName ExtendsOpt LBRACE FieldsDeclOpt ClassMethodDeclOpt RBRACE
+{:
+	if (currentClassObj != MyTab.noObj)
+		MyTab.closeScope();
+	currentClassObj = MyTab.noObj;
+:};
 
-/* 26  */ ExtendsOpt ::= EXTENDS IDENT;
-/* 27  */ ExtendsOpt ::= error {: parser.log.debug("Greska u prosirenju natklase"); :};
+/* 26  */ ExtendsOpt ::= EXTENDS IDENT:superClassName
+{:
+	Obj obj = MyTab.find(superClassName);
+	if (obj.getKind() != Obj.Type && obj.getType().getKind() != Struct.Class)
+	{
+		parser.reportSemanticError("Super class " + superClassName + " undefined", superClassNameleft);
+	}
+:};
+/* 27  */ ExtendsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Error in extension", eleft); :};
 /* 28  */ ExtendsOpt ::= /* epsilon */;
 
 /* 29  */ FieldsDeclOpt ::= FieldsDeclList;
@@ -154,8 +237,8 @@ non terminal Addop, Mulop, Relop;
 
 /* 31  */ FieldsDeclList ::= FieldDeclLine FieldsDeclList;
 /* 32  */ FieldsDeclList ::= FieldDeclLine;
-/* 33  */ FieldsDeclList ::= error {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
-/* 34  */ FieldsDeclList ::= error SEMI {: parser.log.debug("Pogresna deklaracija promenljive!"); :};
+/* 33  */ FieldsDeclList ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
+/* 34  */ FieldsDeclList ::= error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
 
 /* 35  */ FieldDeclLine ::= IDENT VarDeclSequence SEMI;
 
@@ -169,7 +252,17 @@ non terminal Addop, Mulop, Relop;
 /* 40  */ MethodDeclList ::= MethodDeclList MethodDecl;
 /* 41  */ MethodDeclList ::= MethodDecl;
 
-/* 42  */ MethodDecl ::= RetType IDENT LPAREN FormalParamsOpt RPAREN LocalVarDeclOpt LBRACE StatementListOpt RBRACE;
+/* 42  */ MethodDecl ::= RetType MethodName:funcName LPAREN FormalParamsOpt RPAREN LocalVarDeclOpt LBRACE StatementListOpt RBRACE
+{:
+	// METHODDECL KOD
+    if (currentRetType != null && currentRetType != MyTab.noObj)
+    {
+    	if (!returnFound)
+    		parser.reportSemanticError("No return statement in method " + funcName.getName(), funcNameleft);
+    }
+	currentRetType = null;
+	returnFound = false;
+:};
 
 // **** Local Var Declarations ****
 /* 43  */ LocalVarDeclOpt ::= LocalVarDeclList;
@@ -177,13 +270,25 @@ non terminal Addop, Mulop, Relop;
 
 /* 45  */ LocalVarDeclList ::= LocalVarDeclLine LocalVarDeclList;
 /* 46  */ LocalVarDeclList ::= LocalVarDeclLine;
-/* 47  */ LocalVarDeclList ::= IDENT error SEMI {: parser.log.debug("Pogresna deklaracija promelnjive"); :};
-/* 48  */ LocalVarDeclList ::= IDENT error {: parser.log.debug("Pogresna deklaracija promelnjive"); :};
+/* 47  */ LocalVarDeclList ::= IDENT error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
+/* 48  */ LocalVarDeclList ::= IDENT error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
 
 /* 49  */ LocalVarDeclLine ::= IDENT VarDeclSequence SEMI;
 
-/* 50  */ RetType ::= VOID;
-/* 51  */ RetType ::= IDENT;
+/* 50  */ RetType ::= VOID {: currentRetType = MyTab.noObj; :};
+/* 51  */ RetType ::= IDENT:retTypeName
+{:
+	Obj retObj = MyTab.find(retTypeName);
+	if (retObj != MyTab.noObj)
+	{
+		currentRetType = retObj;
+	}
+	else
+	{
+		parser.reportSemanticError("Return type " + retTypeName + "undefined", retTypeNameleft);
+		currentRetType = null;
+	}
+:};
 
 // **** Formal Params Rules ****
 /* 52  */ FormalParamsOpt ::= FormalParamsList;
@@ -191,7 +296,7 @@ non terminal Addop, Mulop, Relop;
 
 /* 54  */ FormalParamsList ::= FormalParamsList COMMA FormalParam;
 /* 55  */ FormalParamsList ::= FormalParam;
-/* 56  */ FormalParamsList ::= error {: parser.log.debug("Pogresna deklaracija formalnih parametara"); :};
+/* 56  */ FormalParamsList ::= error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of formal parameters", eleft); :};
 
 /* 57  */ FormalParam ::= IDENT IDENT;
 /* 58  */ FormalParam ::= IDENT IDENT LBRACKET RBRACKET;
@@ -216,7 +321,7 @@ non terminal Addop, Mulop, Relop;
 
 /* 71  */ Condition ::= CondTerm LOR CondTerm;
 /* 72  */ Condition ::= CondTerm;
-/* 73  */ Condition ::= error {: parser.log.debug("Greska u uslovu!"); :};
+/* 73  */ Condition ::= error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong condition expression", eleft); :};
 
 /* 74  */ CondTerm ::= CondTerm LAND CondFact;
 /* 75  */ CondTerm ::= CondFact;
@@ -226,14 +331,14 @@ non terminal Addop, Mulop, Relop;
 
 /* 78  */ SimpleStatement ::= Designator DesignatorRight SEMI;
 /* 79  */ SimpleStatement ::= BREAK SEMI;
-/* 80  */ SimpleStatement ::= RETURN SEMI;
-/* 81  */ SimpleStatement ::= RETURN Expr SEMI;
+/* 80  */ SimpleStatement ::= RETURN SEMI {: returnFound = true; :};
+/* 81  */ SimpleStatement ::= RETURN Expr SEMI {: returnFound = true; :};
 /* 82  */ SimpleStatement ::= READ LPAREN Designator RPAREN SEMI;
-/* 83  */ SimpleStatement ::= READ LPAREN error RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije read!"); :};
+/* 83  */ SimpleStatement ::= READ LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Read function call error", eleft); :};
 /* 84  */ SimpleStatement ::= PRINT LPAREN Expr RPAREN SEMI;
-/* 85  */ SimpleStatement ::= PRINT LPAREN error RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije print!"); :};
+/* 85  */ SimpleStatement ::= PRINT LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
 /* 86  */ SimpleStatement ::= PRINT LPAREN Expr COMMA NUMBER RPAREN SEMI;
-/* 87  */ SimpleStatement ::= PRINT LPAREN error COMMA NUMBER RPAREN SEMI {: parser.log.debug("Greska u pozivu funkcije print!"); :};
+/* 87  */ SimpleStatement ::= PRINT LPAREN error:e COMMA NUMBER RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
 /* 88  */ SimpleStatement ::= LBRACE StatementListOpt RBRACE;
 
 /* 89  */ Designator ::= IDENT DesignatorListOpt;
@@ -246,12 +351,12 @@ non terminal Addop, Mulop, Relop;
 
 /* 94  */ DesignatorPart ::= DOT IDENT;
 /* 95  */ DesignatorPart ::= LBRACKET Expr RBRACKET;
-/* 96  */ DesignatorPart ::= LBRACKET error RBRACKET {: parser.log.debug("Greska u izrazu za indeksiranje!"); :};
+/* 96  */ DesignatorPart ::= LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong index expression", eleft); :};
 
 /* 97  */ DesignatorRight ::= ASSIGN Expr;
-/* 98  */ DesignatorRight ::= ASSIGN error {: parser.log.debug("Greska u dodeli vrednosti!"); :};
+/* 98  */ DesignatorRight ::= ASSIGN error:e {: parser.reportRecoveredSyntaxError("Wrong assignment expression", eleft); :};
 /* 99  */ DesignatorRight ::= LPAREN ActualParamsOpt RPAREN;
-/* 100 */ DesignatorRight ::= LPAREN error {: parser.log.debug("Greska pri pozivu funkcije!"); :};
+/* 100 */ DesignatorRight ::= LPAREN error:e {: parser.reportRecoveredSyntaxError("Wrong function call", eleft); :};
 /* 101 */ DesignatorRight ::= INC;
 /* 102 */ DesignatorRight ::= DEC;
 
@@ -269,12 +374,12 @@ non terminal Addop, Mulop, Relop;
 /* 111 */ Factor ::= Value;
 /* 112 */ Factor ::= NEW IDENT;
 /* 113 */ Factor ::= NEW IDENT LBRACKET Expr RBRACKET;
-/* 114 */ Factor ::= NEW IDENT LBRACKET error RBRACKET {: parser.log.debug("Greska u izrazu za alociranje!"); :};
+/* 114 */ Factor ::= NEW IDENT LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong allocation expression", eleft); :};
 /* 115 */ Factor ::= LPAREN Expr RPAREN;
 
 /* 116 */ ActualParamsOpt ::= ActualParamsList;
 /* 117 */ ActualParamsOpt ::= /* epsilon */;
-/* 118 */ ActualParamsOpt ::= error {: parser.log.debug("Greska u parametrima u pozivu funkcije!"); :};
+/* 118 */ ActualParamsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Wrong actual parameters in function call", eleft); :};
 
 /* 119 */ ActualParamsList ::= ActualParamsList COMMA Expr;
 /* 120 */ ActualParamsList ::= Expr;
@@ -287,3 +392,66 @@ non terminal Addop, Mulop, Relop;
 /* 125 */ Mulop ::= MOD;
 		 
 /* 126 */ Relop ::= EQ | NEQ | GRT | GRTE | LESS | LESSE;
+
+/* 127 */ ProgramName ::= IDENT:pName
+{:
+	RESULT = insertSymbol(Obj.Prog, pName, MyTab.noType);
+	MyTab.openScope();	
+	//parser.log.info("Program name " + pName);
+:};
+
+/* 128 */ Type ::= IDENT:typeName
+{:
+	Obj typeObjNode = MyTab.find(typeName);
+	if (typeObjNode == MyTab.noObj)
+	{
+		parser.reportSemanticError("Type " + typeName + " undefined", typeNameleft);
+			RESULT = MyTab.noObj;
+	}
+	else
+	{
+		if (typeObjNode.getKind() == Obj.Type)
+			RESULT = typeObjNode;
+		else
+		{
+			parser.reportSemanticError(typeName + " is not a type", typeNameleft);
+			RESULT = MyTab.noObj;
+		}
+	}
+	currentTypeObj = RESULT;
+:};
+
+/* 128 */ ClassName ::= IDENT:className
+{:
+	Obj classObjNode = MyTab.find(className);
+	if (classObjNode != MyTab.noObj)
+	{
+		parser.reportSemanticError("Class " + className + " already defined", classNameleft);
+			RESULT = MyTab.noObj;
+	}
+	else
+	{
+		RESULT = insertSymbol(Obj.Type, className, new Struct(Struct.Class));
+		MyTab.openScope();
+	}
+
+	currentClassObj = RESULT;	
+:};
+
+/* 129 */ MethodName ::= IDENT:methodName
+{:
+	//METHODNAME KOD
+	Obj methObj = MyTab.currentScope.findSymbol(methodName);
+	if (methObj != null && methObj != MyTab.noObj)
+	{
+		parser.reportSemanticError("Method " + methodName + " already defined in current scope", methodNameleft);
+		RESULT = MyTab.noObj;
+	}
+	else
+	{
+		Struct type = MyTab.noType;
+		if (currentRetType != null)
+			type = currentRetType.getType();
+		RESULT = insertSymbol(Obj.Meth, methodName, type);
+	}
+:};
