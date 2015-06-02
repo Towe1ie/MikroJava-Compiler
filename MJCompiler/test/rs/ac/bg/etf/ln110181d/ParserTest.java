@@ -22,7 +22,7 @@ public class ParserTest
 	{
 		Logger log = Logger.getLogger(ParserTest.class);
 		
-		File sourceCodeFile = new File("test/program.mj");
+		File sourceCodeFile = new File("test/test10.mj");
 
 		try (BufferedReader br = new BufferedReader(new FileReader(sourceCodeFile));)
 		{
@@ -32,7 +32,8 @@ public class ParserTest
 		}
 		catch (Exception e)
 		{
-			log.error(e.getMessage());
+			log.error(e.getMessage().toString());
+			//log.error(e.getStackTrace().toString());
 		}
 	}
 
