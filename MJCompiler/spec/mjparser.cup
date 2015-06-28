@@ -7,13 +7,16 @@ import rs.etf.pp1.symboltable.*;
 import rs.etf.pp1.symboltable.concepts.*;
 import java.util.*;
 import rs.etf.pp1.symboltable.structure.*;
+import rs.etf.pp1.mj.runtime.*;
 
 parser code
 {:
 	Logger log = Logger.getLogger(getClass());
+	boolean errorDetected = false;
 
 	public void syntax_error(Symbol cur_token)
 	{
+		errorDetected = true;
 		int line = ((Symbol)cur_token).left;
 		log.error("Syntax error (line " + line + ") Unexpected symbol " + (((Symbol)cur_token).value));
 		//report_error("\nSintaksna greska ", cur_token);
@@ -44,6 +47,7 @@ parser code
 	
 	public void reportSemanticError(String message, int line)
 	{
+		errorDetected = true;
 		StringBuilder sb = new StringBuilder();
 		sb.append("Semantic error (line ").append(line + ") : ").append(message);
 		log.error(sb.toString());
@@ -78,6 +82,7 @@ scan with
 init with
 {:
 	MyTab.init(); // Universe scope
+	MyCode.init();
 :}
 
 action code
@@ -85,6 +90,7 @@ action code
 	// Declarations
 	Obj currentDeclTypeObj = MyTab.noObj;
 	int declKind = Obj.NO_VALUE;	
+	int stringCnt = 0;
 
 	// Classes
 	Obj currentClassObj = MyTab.noObj;
@@ -96,6 +102,7 @@ action code
 	Struct retType = MyTab.noType;
 	boolean isVoid = false;
 	boolean returnFound = false;
+	boolean voidReturnFound = false;
 	int formalParamsCnt = 0;
 
 	// Statements
@@ -104,12 +111,14 @@ action code
 	{
 		return designatorChainsStack.peek();
 	}
+	boolean negation = false;
 	
 	Obj currentMethodCallObj = MyTab.noObj;
 	int currentActualParam = 0;
 	boolean isThisCall = false;
 
-	boolean inWhile = false;
+	//boolean inWhile = false;
+	int whileCnt = 0;
 
 	boolean mainFound = false;
 
@@ -117,6 +126,19 @@ action code
 	{
 		public Object value;
 		public Struct type;
+
+		public int getIntVal()
+		{
+			int val = 0;
+			if (value instanceof Integer)
+				val = (int)value;
+			else if (value instanceof Character)
+				val = (int)((Character)value).charValue();
+			else if (value instanceof Boolean)
+				val = (Boolean)value ? 1 : 0;
+			
+			return val;
+		}
 		
 		public Info(Object value, Struct type)
 		{
@@ -130,6 +152,7 @@ action code
 		public Obj obj;
 		public boolean isElementOfArray = false;
 		public boolean isClassMember = false;
+		public boolean designatorStart = true;
 
 		public DesignatorInfo(Obj obj, boolean isElem)
 		{
@@ -149,6 +172,21 @@ action code
 			return obj.getType();
 		}
 	}	
+
+	class JumpContext
+	{
+		public LinkedList<Integer> beginPatches = new LinkedList<Integer>();
+		public LinkedList<Integer> endPatches = new LinkedList<Integer>();
+		public Stack<Boolean> and_notOr_stack = new Stack<Boolean>();
+		public int ifElsePatch = 0;
+		public boolean hasOr = false;
+		public boolean isWhile = false;
+		public boolean isAndSubcontext = false;
+		public boolean isOrSubcontext = false;
+		public int top = 0;
+	}
+	
+	Stack<JumpContext> jumpContextStack = new Stack<JumpContext>();
 
 	public Obj copyObj(Obj obj)
 	{
@@ -211,7 +249,7 @@ non terminal VarDeclSequence;
 non terminal Obj VarDecl;
 
 // Methods
-non terminal MethodDeclOpt, MethodDeclList, MethodDecl, RetType;
+non terminal MethodDeclOpt, MethodDeclList, MethodDecl, RetType, MethodStart;
 non terminal FormalParamsOpt, FormalParamsList, FormalParam;
 non terminal ActualParamsOpt, ActualParamsList, ActualParam;
 non terminal Obj MethodName;
@@ -221,23 +259,28 @@ non terminal ClassDecl, ExtendsOpt, ClassMethodDeclOpt;
 non terminal Obj ClassName;
 
 // Statements and Expressions
-non terminal Statement, StatementListOpt, StatementList, OpenStatement, ClosedStatement, SimpleStatement;
+non terminal Statement, StatementListOpt, StatementList, OpenStatement, ClosedStatement, SimpleStatement, JumpEnd, PatchElseEnd;
 non terminal DesignatorInfo Designator, DesignatorPart;
-non terminal DesignatorName, DesignatorListOpt, DesignatorList;
+non terminal DesignatorName, DesignatorListOpt, DesignatorList, ArrayAddr;
 non terminal Info Expr, Term, TermList, Factor;
-non terminal Info Condition, CondTerm, CondFact;
-non terminal String Addop, Mulop, Relop;
+non terminal Integer Condition, CondTerm, CondFact, BigCondition;
+non terminal PatchBegin, PatchEnd;
+non terminal String Addop, Mulop;
+non terminal Integer Relop;
 non terminal Info FuncCall;
 non terminal Info Value;
 non terminal DesignatorInfo CallName;
-non terminal IncDec, LoopKeyword;
+non terminal IncDec, PushJumpContext;
+non terminal Integer LoopKeyword;
+non terminal LibFunctions;
 
 // =========================
 // ===== Program Rules =====
 // =========================
 
-/* 1   */ Program ::= PROGRAM ProgramName GlobalDeclarationsOpt LBRACE:l MethodDeclOpt RBRACE
+Program ::= PROGRAM ProgramName GlobalDeclarationsOpt LBRACE:l MethodDeclOpt RBRACE LibFunctions
 {:
+	MyCode.dataSize = Tab.currentScope().getnVars();
 	MyTab.chainLocalSymbols(MyTab.getCurrentScope().outerScopeObj);
 	MyTab.closeScope();
 	if (!mainFound)
@@ -246,7 +289,9 @@ non terminal IncDec, LoopKeyword;
 	MyTab.dump(new MySymbolTableVisitor());
 :};
 
-/* 2   */ ProgramName ::= IDENT:pName
+LibFunctions ::= MethodDeclOpt;
+
+ProgramName ::= IDENT:pName
 {:
 	RESULT = insertSymbol(Obj.Prog, pName, MyTab.noType, pNameleft);
 	if (RESULT == MyTab.noObj)
@@ -258,56 +303,54 @@ non terminal IncDec, LoopKeyword;
 // ===============================
 // ===== Global declarations =====
 // ===============================
-/* 2   */ GlobalDeclarationsOpt ::= GlobalDeclList;
-/* 3   */ GlobalDeclarationsOpt ::= /* epsilon */;
+GlobalDeclarationsOpt ::= GlobalDeclList;
+GlobalDeclarationsOpt ::= /* epsilon */;
 
-/* 4   */ GlobalDeclList ::= GlobalDeclList GlobalDecl;
-/* 5   */ GlobalDeclList ::= GlobalDecl;
+GlobalDeclList ::= GlobalDeclList GlobalDecl;
+GlobalDeclList ::= GlobalDecl;
 
-/* 6   */ GlobalDecl ::= GlobalVarDeclLine;
-/* 7   */ GlobalDecl ::= ConstDeclLine;
-/* 8   */ GlobalDecl ::= ClassDecl;
+GlobalDecl ::= GlobalVarDeclLine;
+GlobalDecl ::= ConstDeclLine;
+GlobalDecl ::= ClassDecl;
 
 // =============================
 // ======== Const rules ========
 // =============================
-/* 8   */ ConstDeclLine ::= CONST Type ConstDeclSequence SEMI {: currentDeclTypeObj = MyTab.noObj; :};
-/* 8   */ ConstDeclLine ::= CONST error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of constant", eleft); :};
-/* 9   */ ConstDeclSequence ::= ConstDeclSequence COMMA ConstDecl;
-/* 10  */ ConstDeclSequence ::= ConstDecl;
+ConstDeclLine ::= CONST Type ConstDeclSequence SEMI {: currentDeclTypeObj = MyTab.noObj; :};
+ConstDeclLine ::= CONST error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of constant", eleft); :};
+ConstDeclSequence ::= ConstDeclSequence COMMA ConstDecl;
+ConstDeclSequence ::= ConstDecl;
 
-/* 11  */ ConstDecl ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of constant", eleft); :};
-/* 12  */ ConstDecl ::= IDENT:constName ASSIGN Value:info
+ConstDecl ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of constant", eleft); :};
+ConstDecl ::= IDENT:constName ASSIGN Value:info
 {:
 	if (!info.type.assignableTo(currentDeclTypeObj.getType()))
 		parser.reportSemanticError("Type " + MyTab.getTypeObj(info.type).getName() + " not assignable to type " + currentDeclTypeObj.getName(), infoleft);
 	else
+	{
 		RESULT = insertSymbol(Obj.Con, constName, currentDeclTypeObj.getType(), infoleft);
+		((Obj)RESULT).setAdr(info.getIntVal());
+	}
 :};
-
-/* 21  */ Value ::= NUMBER:value 		{: RESULT = new Info(value, MyTab.intType); :};
-/* 22  */ Value ::= CHAR_CONST:value 	{: RESULT = new Info(value, MyTab.charType); :};
-/* 23  */ Value ::= BOOL_CONST:value 	{: RESULT = new Info(value, MyTab.boolType); :};
-/* 24  */ Value ::= STRING_CONST:value	{: RESULT = new Info(value, MyTab.stringType); :};
 
 // ===========================
 // ======== Var rules ========
 // ===========================
-/* 13  */ GlobalVarDeclLine ::= Type {: declKind = Obj.Var; :} GlobalVarDeclSequence SEMI {: currentDeclTypeObj = MyTab.noObj; :};
+GlobalVarDeclLine ::= Type {: declKind = Obj.Var; :} GlobalVarDeclSequence SEMI {: currentDeclTypeObj = MyTab.noObj; :};
 
-/* 14  */ GlobalVarDeclSequence ::= GlobalVarDeclSequence COMMA VarDecl;
-/* 15  */ GlobalVarDeclSequence ::= VarDecl;
-/* 16  */ GlobalVarDeclSequence ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
+GlobalVarDeclSequence ::= GlobalVarDeclSequence COMMA VarDecl;
+GlobalVarDeclSequence ::= VarDecl;
+GlobalVarDeclSequence ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
 
-/* 17  */ VarDeclSequence ::= VarDeclSequence COMMA VarDecl;
-/* 18  */ VarDeclSequence ::= VarDecl;
+VarDeclSequence ::= VarDeclSequence COMMA VarDecl;
+VarDeclSequence ::= VarDecl;
 		
-/* 19  */ VarDecl ::= IDENT:varName
+VarDecl ::= IDENT:varName
 {:
 	if (currentDeclTypeObj != MyTab.noObj && !(currentMethodObj == MyTab.noObj && declKind == Obj.Var && MyTab.currLevel > 0))
 		RESULT = insertSymbol(declKind, varName, currentDeclTypeObj.getType(), varNameleft);
 :};
-/* 20  */ VarDecl ::= IDENT:varName LBRACKET RBRACKET
+VarDecl ::= IDENT:varName LBRACKET RBRACKET
 {:
 	if (currentDeclTypeObj != MyTab.noObj && !(currentMethodObj == MyTab.noObj && declKind == Obj.Var && MyTab.currLevel > 0))
 		RESULT = insertSymbol(declKind, varName, new MyStruct(Struct.Array, currentDeclTypeObj.getType()), varNameleft);
@@ -316,7 +359,7 @@ non terminal IncDec, LoopKeyword;
 // =============================
 // ======== Class rules ========
 // =============================
-/* 25  */ ClassDecl ::= CLASS ClassName:classObj ExtendsOpt LBRACE FieldsDeclOpt ClassMethodDeclOpt RBRACE
+ClassDecl ::= CLASS ClassName:classObj ExtendsOpt LBRACE FieldsDeclOpt ClassMethodDeclOpt RBRACE
 {:
 	if (currentClassObj != MyTab.noObj)
 	{
@@ -330,7 +373,7 @@ non terminal IncDec, LoopKeyword;
 	classContext = false;
 :};
 
-/* 128 */ ClassName ::= IDENT:className
+ClassName ::= IDENT:className
 {:
 	MyStruct struct = new MyStruct(Struct.Class);
 	RESULT = insertSymbol(Obj.Type, className, struct, classNameleft);
@@ -346,7 +389,7 @@ non terminal IncDec, LoopKeyword;
 	classContext = true;	
 :};
 
-/* 26  */ ExtendsOpt ::= EXTENDS IDENT:superClassName
+ExtendsOpt ::= EXTENDS IDENT:superClassName
 {:
 	Obj obj = MyTab.find(superClassName);
 	if (obj == null || (obj.getKind() != Obj.Type && obj.getType().getKind() != Struct.Class))
@@ -369,25 +412,25 @@ non terminal IncDec, LoopKeyword;
 		}
 	}
 :};
-/* 27  */ ExtendsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Error in extension", eleft); :};
-/* 28  */ ExtendsOpt ::= /* epsilon */;
+ExtendsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Error in extension", eleft); :};
+ExtendsOpt ::= /* epsilon */;
 
-/* 29  */ FieldsDeclOpt ::= FieldsDeclList
+FieldsDeclOpt ::= FieldsDeclList
 {:
 	if (currentClassObj != MyTab.noObj)
 		MyTab.chainLocalSymbols(MyTab.getCurrentScope().outerScopeObj.getType());
 :};
-/* 30  */ FieldsDeclOpt ::= /* epsilon */;
+FieldsDeclOpt ::= /* epsilon */;
 
-/* 31  */ FieldsDeclList ::= FieldDeclLine FieldsDeclList;
-/* 32  */ FieldsDeclList ::= FieldDeclLine;
-/* 33  */ FieldsDeclList ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
-/* 34  */ FieldsDeclList ::= error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
+FieldsDeclList ::= FieldDeclLine FieldsDeclList;
+FieldsDeclList ::= FieldDeclLine;
+FieldsDeclList ::= error:e {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
+FieldsDeclList ::= error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong declaration of variable", eleft); :};
 
-/* 35  */ FieldDeclLine ::= Type VarDeclSequence SEMI;
+FieldDeclLine ::= Type VarDeclSequence SEMI;
 
-/* 36  */ ClassMethodDeclOpt ::= LBRACE MethodDeclOpt RBRACE;
-/* 37  */ ClassMethodDeclOpt ::= /* epsilon */;
+ClassMethodDeclOpt ::= LBRACE MethodDeclOpt RBRACE;
+ClassMethodDeclOpt ::= /* epsilon */;
 
 // ==============================
 // ======== Method rules ========
@@ -398,7 +441,7 @@ non terminal IncDec, LoopKeyword;
 /* 40  */ MethodDeclList ::= MethodDeclList MethodDecl;
 /* 41  */ MethodDeclList ::= MethodDecl;
 
-/* 42  */ MethodDecl ::= RetType MethodName:methObj LPAREN FormalParamsOpt RPAREN LocalVarDeclOpt LBRACE StatementListOpt RBRACE
+/* 42  */ MethodDecl ::= RetType MethodName:methObj LPAREN FormalParamsOpt RPAREN LocalVarDeclOpt LBRACE MethodStart StatementListOpt RBRACE
 {:
 	if (currentMethodObj != MyTab.noObj)
 	{
@@ -406,18 +449,33 @@ non terminal IncDec, LoopKeyword;
 			parser.reportSemanticError("No return statement in method " + methObj.getName(), methObjleft);
 		else if (isVoid && returnFound)
 			parser.reportSemanticError("Return statement in void method " + methObj.getName(), methObjleft);
-			
-			int forParsCnt = (classContext) ? formalParamsCnt + 1 : formalParamsCnt;
-			currentMethodObj.setAdr(forParsCnt);
-			MyTab.chainLocalSymbols(MyTab.getCurrentScope().outerScopeObj);
-			MyTab.closeScope();
-			parser.log.debug("**** Method \"" + methObj.getName() + "\" scope closed");
+		else if (isVoid && !voidReturnFound)
+		{	
+			MyCode.put(MyCode.exit);
+			MyCode.put(MyCode.return_);
+		}
+		MyTab.chainLocalSymbols(MyTab.getCurrentScope().outerScopeObj);
+		MyTab.closeScope();
+		parser.log.debug("**** Method \"" + methObj.getName() + "\" scope closed");
 	}
 	formalParamsCnt = 0;
 	declKind = Obj.NO_VALUE;
 	currentMethodObj = MyTab.noObj;
 	retType = MyTab.noType;
 	returnFound = false;
+	voidReturnFound = false;
+:};
+
+MethodStart ::= /* epsilon */
+{:
+	currentMethodObj.setAdr(MyCode.pc);
+	if (currentMethodObj.getName().equals("main"))
+		MyCode.mainPc = MyCode.pc;
+	int forParsCnt = (classContext) ? formalParamsCnt + 1 : formalParamsCnt;
+	currentMethodObj.setLevel(forParsCnt);
+	MyCode.put(MyCode.enter);
+	MyCode.put(currentMethodObj.getLevel());
+	MyCode.put(MyTab.currentScope().getnVars());
 :};
 
 /* 50  */ RetType ::= VOID {: isVoid = true; :};
@@ -501,54 +559,257 @@ non terminal IncDec, LoopKeyword;
 // =================================
 // ======== Statement rules ========
 // =================================
-/* 59  */ StatementListOpt ::= StatementList;
-/* 60  */ StatementListOpt ::= /* epsilon */;
+StatementListOpt ::= StatementList;
+StatementListOpt ::= /* epsilon */;
 
-/* 61  */ StatementList ::= StatementList Statement;
-/* 62  */ StatementList ::= Statement;
+StatementList ::= StatementList Statement;
+StatementList ::= Statement;
 
-/* 63  */ Statement ::= OpenStatement;
-/* 64  */ Statement ::= ClosedStatement;
+Statement ::= OpenStatement;
+Statement ::= ClosedStatement;
 
-/* 65  */ OpenStatement ::= IF LPAREN Condition RPAREN Statement;
-/* 66  */ OpenStatement ::= IF LPAREN Condition RPAREN ClosedStatement ELSE OpenStatement;
-/* 67  */ OpenStatement ::= LoopKeyword LPAREN Condition RPAREN OpenStatement {: inWhile = false; :};
-
-/* 68  */ ClosedStatement ::= SimpleStatement;
-/* 69  */ ClosedStatement ::= IF LPAREN Condition RPAREN ClosedStatement ELSE ClosedStatement;
-/* 70  */ ClosedStatement ::= LoopKeyword LPAREN Condition RPAREN ClosedStatement {: inWhile = false; :};
-
-/* xxx */ LoopKeyword ::= WHILE
+OpenStatement ::= PushJumpContext IF LPAREN BigCondition RPAREN PatchBegin Statement PatchEnd {: jumpContextStack.pop(); :};
+OpenStatement ::= PushJumpContext IF LPAREN BigCondition RPAREN PatchBegin ClosedStatement JumpEnd ELSE PatchEnd OpenStatement PatchElseEnd;
+OpenStatement ::= PushJumpContext LoopKeyword LPAREN BigCondition RPAREN PatchBegin OpenStatement PatchEnd
 {:
-	inWhile = true;
+	jumpContextStack.pop();
 :};
 
-/* 71  */ Condition ::= CondTerm LOR CondTerm;
-/* 72  */ Condition ::= CondTerm;
-/* 73  */ Condition ::= error:e {: parser.reportRecoveredSyntaxError("Wrong condition expression", eleft); :};
+ClosedStatement ::= SimpleStatement;
+ClosedStatement ::= PushJumpContext IF LPAREN BigCondition RPAREN PatchBegin ClosedStatement JumpEnd ELSE PatchEnd ClosedStatement PatchElseEnd;
+ClosedStatement ::= PushJumpContext LoopKeyword LPAREN BigCondition RPAREN PatchBegin ClosedStatement PatchEnd
+{:
+	jumpContextStack.pop();
+:};
 
-/* 74  */ CondTerm ::= CondTerm LAND CondFact;
-/* 75  */ CondTerm ::= CondFact;
+LoopKeyword ::= WHILE
+{:
+	jumpContextStack.peek().isWhile = true;
+	jumpContextStack.peek().top = MyCode.pc;
+	//inWhile = true;
+	whileCnt++;
+:};
+
+PushJumpContext ::= /* epsilon */
+{:
+	jumpContextStack.push(new JumpContext());
+:};
+
+PatchBegin ::= /* epsilon */
+{:	
+			
+	JumpContext myJump = jumpContextStack.peek();
+	JumpContext temp = null;
+	if (myJump.isAndSubcontext)
+	{
+		temp = jumpContextStack.pop();
+		myJump = jumpContextStack.peek();
+	}
+	if (myJump.hasOr)
+	{
+		MyCode.putJump(0);
+		myJump.endPatches.add(MyCode.pc - 2);
+	}
+	for (Integer addr : myJump.beginPatches)
+		MyCode.fixup(addr);
+	if (temp != null)
+		jumpContextStack.push(temp);
+:};
+
+PatchEnd ::= /* epsilon */
+{:
+	JumpContext myJump = jumpContextStack.peek();
+	boolean isAndSubcontext = myJump.isAndSubcontext;
+	if (myJump.isWhile)
+	{
+		//inWhile = false;
+		whileCnt--;
+		MyCode.putJump(myJump.top);
+	}
+	for (Integer addr : myJump.endPatches)
+		MyCode.fixup(addr);
+	if (isAndSubcontext)
+		jumpContextStack.pop();
+:};
+
+JumpEnd ::= /* epsilon */
+{:
+	MyCode.putJump(0);
+	JumpContext tmp = null;
+	if (jumpContextStack.peek().isAndSubcontext)
+		tmp = jumpContextStack.pop();
+	jumpContextStack.peek().ifElsePatch = MyCode.pc - 2;
+	if (tmp != null)
+		jumpContextStack.push(tmp);
+:};
+
+PatchElseEnd ::= /* epsilon */
+{:
+	MyCode.fixup(jumpContextStack.peek().ifElsePatch);
+	jumpContextStack.pop();
+:};
+
+Condition ::= Condition:opl LOR
+{:
+		if (opl != MyCode.checked)
+		{
+			jumpContextStack.peek().isOrSubcontext = true;
+			if (opl == MyCode.noRelop)
+			{
+				MyCode.loadConst(1);
+				MyCode.putFalseJump(MyCode.ne, 0);
+				jumpContextStack.peek().beginPatches.add(MyCode.pc - 2);
+			}
+			else
+			{
+				MyCode.putFalseJump(MyCode.inverse[opl], 0);
+				jumpContextStack.peek().beginPatches.add(MyCode.pc - 2);
+			}
+		}
+		else
+		{
+			if (jumpContextStack.peek().isAndSubcontext)
+			{
+				JumpContext myJump = jumpContextStack.pop();
+				MyCode.putJump(0);
+				jumpContextStack.peek().beginPatches.add(MyCode.pc - 2);
+				for (Integer addr : myJump.endPatches)
+					MyCode.fixup(addr);
+			}
+		}
+:}
+CondTerm:opr
+{:
+	RESULT = MyCode.checked;
+	JumpContext tmp = null;
+	if (jumpContextStack.peek().isAndSubcontext)
+		tmp = jumpContextStack.pop();
+	if (opr != MyCode.checked)
+	{
+		jumpContextStack.peek().hasOr = true;
+		if (opr == MyCode.noRelop)
+		{
+			MyCode.loadConst(1);
+			MyCode.putFalseJump(MyCode.ne, 0);
+			jumpContextStack.peek().beginPatches.add(MyCode.pc - 2);
+		}
+		else
+		{
+			MyCode.putFalseJump(MyCode.inverse[opr], 0);
+			jumpContextStack.peek().beginPatches.add(MyCode.pc - 2);
+		}
+	}
+	else
+		jumpContextStack.peek().hasOr = false;
+	if (tmp != null)
+		jumpContextStack.push(tmp);
+:};
+
+
+
+BigCondition ::= Condition:op
+{: 
+	RESULT = op;
+	if (!(jumpContextStack.peek().isOrSubcontext || jumpContextStack.peek().isAndSubcontext))
+	{
+		if (op == MyCode.noRelop)
+		{
+			MyCode.loadConst(1);
+			MyCode.putFalseJump(MyCode.eq, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+		else
+		{
+			MyCode.putFalseJump(op, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+	}
+:};
+
+Condition ::= CondTerm:op
+{: 
+	RESULT = op;
+:};
+Condition ::= error:e {: parser.reportRecoveredSyntaxError("Wrong condition expression", eleft); :};
+
+CondTerm ::= CondTerm:opl LAND
+{:
+	if (!jumpContextStack.peek().isAndSubcontext)
+	{
+		JumpContext newJumpContext = new JumpContext();
+		newJumpContext.isWhile = jumpContextStack.peek().isWhile;
+		newJumpContext.top = jumpContextStack.peek().top;
+		jumpContextStack.push(newJumpContext);
+		jumpContextStack.peek().isAndSubcontext = true;
+	}
+	if (opl != MyCode.checked)
+	{
+		if (opl == MyCode.noRelop)
+		{
+			MyCode.loadConst(0);
+			MyCode.putFalseJump(MyCode.ne, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+		else
+		{
+			MyCode.putFalseJump(opl, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+	}
+:}
+CondFact:opr
+{:
+	RESULT = MyCode.checked;
+	
+	if (opr != MyCode.checked)
+	{
+		if (opr == MyCode.noRelop)
+		{
+			MyCode.loadConst(0);
+			MyCode.putFalseJump(MyCode.ne, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+		else
+		{
+			MyCode.putFalseJump(opr, 0);
+			jumpContextStack.peek().endPatches.add(MyCode.pc - 2);
+		}
+	}
+:};
+CondTerm ::= CondFact:op {: RESULT = op; :};
 			 
-/* 76  */ CondFact ::= Expr:leftInfo Relop:op Expr:rightInfo
+CondFact ::= Expr:leftInfo Relop:op Expr:rightInfo
 {:
 	if (!leftInfo.type.compatibleWith(rightInfo.type))
 		parser.reportSemanticError("Expressions not compatible", rightInfoleft);
-	else if ((leftInfo.type.getKind() == Struct.Class || leftInfo.type.getKind() == Struct.Array) && (!op.equals("!=") && !op.equals("==")))
+	else if ((leftInfo.type.getKind() == Struct.Class || leftInfo.type.getKind() == Struct.Array) && (!(op.equals(MyCode.ne) || op.equals(MyCode.eq))))
 		parser.reportSemanticError("Only != and == operators allowed on class and array types", leftInfoleft);
+	else
+	{
+		if (leftInfo.type.equals(MyTab.stringType))
+		{
+			Obj strEqObj = MyTab.find("_stringEquals");
+			int addr = strEqObj.getAdr() - MyCode.pc;
+			MyCode.put(MyCode.call);
+			MyCode.put2(addr);
+			RESULT = MyCode.noRelop;
+		}
+		else
+			RESULT = op;
+	}
 :};
-/* 77  */ CondFact ::= Expr:exprInfo
+CondFact ::= Expr:exprInfo
 {:
 	if (!exprInfo.type.equals(MyTab.boolType))
 		parser.reportSemanticError("Expression must be of boolean type", exprInfoleft);
+	else
+		RESULT = MyCode.noRelop;
 :};
 
-/* xxx */ IncDec ::= INC;
-/* xxx */ IncDec ::= DEC;
 
-/* 79  */ SimpleStatement ::= Designator:desigInfo ASSIGN Expr:exInfo SEMI
+SimpleStatement ::= Designator:desigInfo ASSIGN Expr:exInfo SEMI
 {:
-	if (desigInfo.obj.getKind() != Obj.Var && desigInfo.obj.getKind() != Obj.Fld)
+	if (desigInfo.obj.getKind() != Obj.Var && desigInfo.obj.getKind() != Obj.Fld && desigInfo.obj.getKind() != Obj.Elem)
     {
     	parser.reportSemanticError("Incorrect assignement, destination must be a variable, an element of array or a field", exInfoleft);
     }
@@ -563,29 +824,66 @@ non terminal IncDec, LoopKeyword;
 			if (!(srcType instanceof MyStruct && ((MyStruct)srcType).superClass.getType().compatibleWith(destType)))
 				parser.reportSemanticError("Destination and source type must be compatibile",exInfoleft);
 		}
+		else
+		{
+			MyCode.store(desigInfo.obj);
+		}
 	}
 :};
-/* 79  */ SimpleStatement ::= Designator:desigInfo ASSIGN error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong assignment expression", eleft); :};
-/* 80  */ SimpleStatement ::= FuncCall SEMI;
-/* 81  */ SimpleStatement ::= Designator:desigInfo IncDec SEMI
+SimpleStatement ::= Designator:desigInfo ASSIGN error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong assignment expression", eleft); :};
+SimpleStatement ::= FuncCall:funcInfo SEMI
+{:
+	if (funcInfo.type != MyTab.noType)
+	{
+		MyCode.put(MyCode.pop);
+	}
+:};
+SimpleStatement ::= Designator:desigInfo {: MyCode.load(desigInfo.obj); :} IncDec SEMI
 {:
 	if (!(desigInfo.obj.getKind() == Obj.Var || desigInfo.obj.getKind() == Obj.Fld))
 		parser.reportSemanticError("Identifier " + desigInfo.obj.getName() + " must be a variable, an array element or a field", desigInfoleft);
-	if (!desigInfo.getType().equals(MyTab.intType))
+	else if (!desigInfo.getType().equals(MyTab.intType))
 		parser.reportSemanticError("Unary inc/dec allowed only on integers", desigInfoleft);
+	else
+		MyCode.store(desigInfo.obj);
+
+:};
+IncDec ::= INC
+{:
+	MyCode.loadConst(1);
+	MyCode.put(MyCode.add);
+:};
+IncDec ::= DEC
+{:
+	MyCode.loadConst(1);
+	MyCode.put(MyCode.sub);
 :};
 
-/* 79  */ SimpleStatement ::= BREAK:br SEMI
+SimpleStatement ::= BREAK:br SEMI
 {:
-	if (inWhile == false)
+	if (whileCnt == 0)//inWhile == false)
 		parser.reportSemanticError("Break statement allowed only in while loop", brleft);
+	else
+	{
+		MyCode.putJump(0);
+		int i = jumpContextStack.size() - 1;
+		while(jumpContextStack.get(i).isWhile == false)
+			i--;
+		jumpContextStack.get(i).endPatches.add(MyCode.pc - 2);
+	}
 :};
-/* 80  */ SimpleStatement ::= RETURN:r SEMI
+SimpleStatement ::= RETURN:r SEMI
 {:
+	voidReturnFound = true;
 	if (!isVoid)
 		parser.reportSemanticError("Method must return a value", rleft);
+	else
+	{
+		MyCode.put(MyCode.exit);
+		MyCode.put(MyCode.return_);
+	}
 :};
-/* 81  */ SimpleStatement ::= RETURN Expr:exprInfo SEMI
+SimpleStatement ::= RETURN Expr:exprInfo SEMI
 {:
 	returnFound = true;
 	
@@ -593,56 +891,116 @@ non terminal IncDec, LoopKeyword;
 	{
 		parser.reportSemanticError("Expresion type doesn't match method return type", exprInfoleft);
 	}
+	else
+	{
+		MyCode.put(MyCode.exit);
+		MyCode.put(MyCode.return_);
+	}
 :};
 
-/* 82  */ SimpleStatement ::= READ LPAREN Designator:desigInfo RPAREN SEMI
+SimpleStatement ::= READ LPAREN Designator:desigInfo RPAREN SEMI
 {:
 	if (desigInfo.obj != MyTab.noObj && !(desigInfo.obj.getKind() == Obj.Var || desigInfo.obj.getKind() == Obj.Fld))
-	{
 		parser.reportSemanticError("Identifier " + desigInfo.obj.getName() + " must be a variable, an array element or a field", desigInfoleft);
-	}
-
-	if (desigInfo.obj != MyTab.noObj && !(desigInfo.obj.getType().equals(MyTab.intType) || desigInfo.obj.getType().equals(MyTab.charType) || desigInfo.obj.getType().equals(MyTab.boolType) || desigInfo.obj.getType().equals(MyTab.stringType)))
-	{
+	else if (desigInfo.obj != MyTab.noObj && !(desigInfo.obj.getType().equals(MyTab.intType) || desigInfo.obj.getType().equals(MyTab.charType) || desigInfo.obj.getType().equals(MyTab.boolType) || desigInfo.obj.getType().equals(MyTab.stringType)))
 		parser.reportSemanticError("Identifier " + desigInfo.obj.getName() + " must be a of int, char, bool or string type", desigInfoleft);
+	else
+	{
+		if (desigInfo.obj.getType().equals(MyTab.intType))
+		{
+			MyCode.put(MyCode.read);
+			MyCode.store(desigInfo.obj);
+		}
+		else if (desigInfo.obj.getType().equals(MyTab.charType))
+		{
+			MyCode.put(MyCode.bread);
+			MyCode.store(desigInfo.obj);
+		}
+		else if (desigInfo.obj.getType().equals(MyTab.stringType))
+		{
+			Obj readStrObj = MyTab.find("_readString");
+			int offset = readStrObj.getAdr() - MyCode.pc;
+			MyCode.put(MyCode.call);
+			MyCode.put2(offset);
+			MyCode.store(desigInfo.obj);
+		}
 	}
 :};
 
-/* 83  */ SimpleStatement ::= READ LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Read function call error", eleft); :};
-/* 84  */ SimpleStatement ::= PRINT LPAREN Expr:exprInfo RPAREN SEMI
+SimpleStatement ::= READ LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Read function call error", eleft); :};
+SimpleStatement ::= PRINT LPAREN Expr:exprInfo RPAREN SEMI
 {:
 	if (!(exprInfo.type.equals(MyTab.intType) || exprInfo.type.equals(MyTab.charType) || exprInfo.type.equals(MyTab.boolType) || exprInfo.type.equals(MyTab.stringType)))
 	{
 		parser.reportSemanticError("Expression must be of int, char, bool or string type", exprInfoleft);
 	}
+	else
+	{
+		if (exprInfo.type == MyTab.intType)
+		{
+			MyCode.loadConst(10);
+			MyCode.put(MyCode.print);
+		}
+		else if (exprInfo.type == MyTab.charType)
+		{
+			MyCode.loadConst(1);
+			MyCode.put(MyCode.bprint);
+		}
+		else if (exprInfo.type == MyTab.stringType)
+		{
+			Obj printStrObj = MyTab.find("_printString");
+			int offset = printStrObj.getAdr() - MyCode.pc;
+			MyCode.put(MyCode.call);
+			MyCode.put2(offset);
+		}
+	}
 :};
 
-/* 85  */ SimpleStatement ::= PRINT LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
-/* 86  */ SimpleStatement ::= PRINT LPAREN Expr:exprInfo COMMA NUMBER RPAREN SEMI
+SimpleStatement ::= PRINT LPAREN error:e RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
+SimpleStatement ::= PRINT LPAREN Expr:exprInfo COMMA NUMBER:num RPAREN SEMI
 {:
 	if (!(exprInfo.type.equals(MyTab.intType) || exprInfo.type.equals(MyTab.charType) || exprInfo.type.equals(MyTab.boolType) || exprInfo.type.equals(MyTab.stringType)))
 	{
 		parser.reportSemanticError("Expression must be of int, char, bool or string type", exprInfoleft);
 	}
+	else
+	{
+		if (exprInfo.type == MyTab.intType)
+		{
+			MyCode.loadConst(num);
+			MyCode.put(MyCode.print);
+		}
+		else if (exprInfo.type == MyTab.charType)
+		{
+			MyCode.loadConst(num);
+			MyCode.put(MyCode.bprint);
+		}
+	}
 :};
-/* 87  */ SimpleStatement ::= PRINT LPAREN error:e COMMA NUMBER RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
-/* 88  */ SimpleStatement ::= LBRACE StatementListOpt RBRACE;
+SimpleStatement ::= PRINT LPAREN error:e COMMA NUMBER RPAREN SEMI {: parser.reportRecoveredSyntaxError("Print function call error", eleft); :};
+SimpleStatement ::= LBRACE StatementListOpt RBRACE;
 
 // =====================================
 // ======== Function call rules ========
 // =====================================
 
-/* 89  */ FuncCall ::= CallName:callInfo LPAREN:l ActualParamsOpt RPAREN
+FuncCall ::= CallName:callInfo LPAREN:l ActualParamsOpt RPAREN
 {:
 	RESULT = new Info(0, currentMethodCallObj.getType());
 	
-	int forParsCnt = (isThisCall) ? currentMethodCallObj.getAdr() - 1 : currentMethodCallObj.getAdr();
+	int forParsCnt = (isThisCall) ? currentMethodCallObj.getLevel() - 1 : currentMethodCallObj.getLevel();
 
 	if (currentActualParam < forParsCnt)
 		parser.reportSemanticError("Insufficient number of arguments", lleft);
+	else
+	{
+		int offset = callInfo.obj.getAdr() - MyCode.pc;
+		MyCode.put(MyCode.call);
+		MyCode.put2(offset);
+	}
 :};
-/* 89  */ FuncCall ::= CallName LPAREN  error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong function call", eleft); :};
-/* 89  */ CallName ::= Designator:desigInfo
+FuncCall ::= CallName LPAREN  error:e SEMI {: parser.reportRecoveredSyntaxError("Wrong function call", eleft); :};
+CallName ::= Designator:desigInfo
 {:
 	currentActualParam = 0;
 	isThisCall = false;
@@ -664,17 +1022,17 @@ non terminal IncDec, LoopKeyword;
 :};
 
 
-/* 116 */ ActualParamsOpt ::= ActualParamsList;
-/* 117 */ ActualParamsOpt ::= /* epsilon */;
-/* 118 */ ActualParamsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Wrong actual parameters in function call", eleft); :};
+ActualParamsOpt ::= ActualParamsList;
+ActualParamsOpt ::= /* epsilon */;
+ActualParamsOpt ::= error:e {: parser.reportRecoveredSyntaxError("Wrong actual parameters in function call", eleft); :};
 
-/* 119 */ ActualParamsList ::= ActualParamsList COMMA ActualParam;
-/* 120 */ ActualParamsList ::= ActualParam;
-/* 121 */ ActualParam ::= Expr:exprInfo
+ActualParamsList ::= ActualParamsList COMMA ActualParam;
+ActualParamsList ::= ActualParam;
+ActualParam ::= Expr:exprInfo
 {:
 	if (currentMethodCallObj != MyTab.noObj)
 	{
-		int forParsCnt = (isThisCall) ? currentMethodCallObj.getAdr() - 1 : currentMethodCallObj.getAdr();
+		int forParsCnt = (isThisCall) ? currentMethodCallObj.getLevel() - 1 : currentMethodCallObj.getLevel();
 		if (currentActualParam + 1 > forParsCnt)
 		{
 			parser.reportSemanticError("To many arguments", exprInfoleft);
@@ -687,9 +1045,9 @@ non terminal IncDec, LoopKeyword;
 				it.next();
 			for (int i = 0; i <= currentActualParam; ++i)
 				paramObj = it.next();
-			if (exprInfo.type != MyTab.noType && !paramObj.getType().compatibleWith(exprInfo.type))
+			if (exprInfo.type != MyTab.noType && !paramObj.getType().compatibleWith(exprInfo.type)
+				&& !(exprInfo.type.getKind() == Struct.Array && paramObj.getType().getKind() == Struct.Array && paramObj.getType().getElemType() == MyTab.noType))
 			{
-				if (!(exprInfo.type.getKind() == Struct.Array && paramObj.getType().getKind() == Struct.Array && paramObj.getType().getElemType() == MyTab.noType))
 				parser.reportSemanticError("Actual parameter on position " + currentActualParam + ". type (" + MyTab.getTypeName(exprInfo.type)
 										 + ") doesn't match with formal parameter type (" + MyTab.getTypeName(paramObj.getType()) + ")", exprInfoleft);
 			}
@@ -701,12 +1059,12 @@ non terminal IncDec, LoopKeyword;
 // ==================================
 // ======== Designator rules ========
 // ==================================
-/* 89  */ Designator ::= DesignatorName DesignatorListOpt
+Designator ::= DesignatorName DesignatorListOpt
 {:
 	RESULT = designatorChainsStack.pop();
 	
 :};
-/* 89  */ DesignatorName ::= IDENT:desigName
+DesignatorName ::= IDENT:desigName
 {:
 	Obj designatorObj = MyTab.find(desigName);
 	if (designatorObj == null || designatorObj == MyTab.noObj)
@@ -722,13 +1080,13 @@ non terminal IncDec, LoopKeyword;
 	}
 :};
 
-/* 90  */ DesignatorListOpt ::= DesignatorList;
-/* 91  */ DesignatorListOpt ::= /* epsilon */;
+DesignatorListOpt ::= DesignatorList;
+DesignatorListOpt ::= /* epsilon */;
 
-/* 92  */ DesignatorList ::= DesignatorList DesignatorPart;
-/* 93  */ DesignatorList ::= DesignatorPart;
+DesignatorList ::= DesignatorList DesignatorPart;
+DesignatorList ::= DesignatorPart;
 
-/* 94  */ DesignatorPart ::= DOT IDENT:desigName
+DesignatorPart ::= DOT IDENT:desigName
 {:
 	if (designatorTop().obj != MyTab.noObj)
 	{
@@ -736,6 +1094,7 @@ non terminal IncDec, LoopKeyword;
 			parser.reportSemanticError("Identifier " + designatorTop().obj.getName() + " is not of class type", desigNameleft);
 		else
 		{
+			designatorTop().designatorStart = false;
 			Obj desigObj = MyTab.noObj;
 			boolean found = false;
 			for (Obj o : designatorTop().obj.getType().getMembers())
@@ -762,7 +1121,7 @@ non terminal IncDec, LoopKeyword;
 	}
 :};
 
-/* 95  */ DesignatorPart ::= LBRACKET Expr:exprInfo RBRACKET
+DesignatorPart ::= LBRACKET ArrayAddr Expr:exprInfo RBRACKET
 {:
 	if (designatorTop().obj.getType().getKind() != Struct.Array)
 		parser.reportSemanticError("Identifier " + designatorTop().obj.getName() + " is not an array", exprInfoleft);
@@ -770,15 +1129,25 @@ non terminal IncDec, LoopKeyword;
 	{
 		if (!exprInfo.type.equals(MyTab.intType))
 			parser.reportSemanticError("Index expression is not of int type", exprInfoleft);
-		designatorTop().isElementOfArray = true;
+		else
+		{
+			designatorTop().obj = new MyObj(MyObj.Elem, "tempObj_elem", designatorTop().obj.getType().getElemType());
+			designatorTop().isElementOfArray = true;
+		}
 	}
 :};
-/* 96  */ DesignatorPart ::= LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong index expression", eleft); :};
+
+ArrayAddr ::= /* epsilon */
+{:
+	if (designatorTop().designatorStart)
+		MyCode.load(designatorTop().obj);
+:};
+DesignatorPart ::= LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong index expression", eleft); :};
 
 // ==================================
 // ======== Expression rules ========
 // ==================================
-/* 103 */ Expr ::= SUB TermList:termListInfo
+Expr ::= SUB {: negation = true; :} TermList:termListInfo
 {:
 	if (!termListInfo.type.equals(MyTab.intType))
 	{
@@ -786,18 +1155,35 @@ non terminal IncDec, LoopKeyword;
 		RESULT = new Info(0, MyTab.noType);
 	}
 	else
-		RESULT = new Info(0, termListInfo.type);
+		RESULT = termListInfo;
 :};
-/* 104 */ Expr ::= TermList:termListInfo
+
+Expr ::= TermList:termListInfo
 {:
 	RESULT = termListInfo;
 :};
 
-/* 105 */ TermList ::= TermList:leftInfo Addop:opString Term:rightInfo
+TermList ::= TermList:leftInfo Addop:opString Term:rightInfo
 {:
 	if (leftInfo.type.equals(MyTab.intType) && rightInfo.type.equals(MyTab.intType) ||
 		leftInfo.type.equals(MyTab.stringType) && rightInfo.type.equals(MyTab.stringType) && opString.equals("+"))
+	{
+		if (opString.equals("+"))
+		{
+			if (leftInfo.type.equals(MyTab.stringType))
+			{
+				Obj strAddObj = MyTab.find("_addStrings");
+				int offset = strAddObj.getAdr() - MyCode.pc;
+				MyCode.put(MyCode.call);
+				MyCode.put2(offset);
+			}
+			else
+				MyCode.put(MyCode.add);
+		}
+		else
+			MyCode.put(MyCode.sub);
 		RESULT = new Info(0, leftInfo.type);
+	}
 	else
 	{
 		RESULT = new Info(0, MyTab.noType);
@@ -808,12 +1194,12 @@ non terminal IncDec, LoopKeyword;
 	}
 :};
 
-/* 106 */ TermList ::= Term:termInfo
+TermList ::= Term:termInfo
 {:
 	RESULT = termInfo;
 :};
 
-/* 107 */ Term ::= Term:termInfo Mulop:opString Factor:factorInfo
+Term ::= Term:termInfo Mulop:opString Factor:factorInfo
 {:
 	if (!(factorInfo.type.equals(MyTab.intType) && termInfo.type.equals(MyTab.intType)))
 	{
@@ -821,29 +1207,48 @@ non terminal IncDec, LoopKeyword;
 		RESULT = new Info(0, MyTab.noType);
 	}
 	else
+	{
+		if (opString.equals("*"))
+			MyCode.put(MyCode.mul);
+		else if (opString.equals("/"))
+			MyCode.put(MyCode.div);
+		else
+			MyCode.put(MyCode.rem);
 		RESULT = new Info(0, MyTab.intType);
+	}
 :};
 
-/* 108 */ Term ::= Factor:factorInfo
+Term ::= Factor:factorInfo
 {:
+	if (negation)
+	{
+		negation = false;
+		MyCode.put(MyCode.neg);
+	}
 	RESULT = factorInfo;
 :};
 
-/* 109 */ Factor ::= Designator:desigInfo
+Factor ::= Designator:desigInfo
 {:
+	MyCode.load(desigInfo.obj);
 	RESULT = new Info(0, desigInfo.getType());
 :};
-/* 110 */ Factor ::= FuncCall:funcCallInfo
+
+Factor ::= FuncCall:funcCallInfo
 {:
 	RESULT = funcCallInfo;
 :};
 
-/* 111 */ Factor ::= Value:valueInfo
+Factor ::= Value:valueInfo
 {:
+	//if (valueInfo.type == MyTab.stringType)
+		//MyCode.bload(new Obj(Obj.Con, "tempConst_" + valueInfo.value.toString(), valueInfo.type, valueInfo.getIntVal(), -2));
+	//else
+		MyCode.load(new Obj(Obj.Con, "tempConst_" + valueInfo.value.toString(), valueInfo.type, valueInfo.getIntVal(), -2));
 	RESULT = valueInfo;
 :};
 
-/* 112 */ Factor ::= NEW IDENT:typeName
+Factor ::= NEW IDENT:typeName
 {:
 	Obj typeObj = MyTab.find(typeName);
 	if (typeObj == null || typeObj.getKind() != Obj.Type || typeObj.getType().getKind() != Struct.Class)
@@ -855,7 +1260,7 @@ non terminal IncDec, LoopKeyword;
 		RESULT = new Info(0, typeObj.getType());
 :};
 
-/* 113 */ Factor ::= NEW IDENT:typeName LBRACKET Expr:exprInfo RBRACKET
+Factor ::= NEW IDENT:typeName LBRACKET Expr:exprInfo RBRACKET
 {:
 	Obj typeObj = MyTab.find(typeName);
 	if (typeObj == null || typeObj.getKind() != Obj.Type)
@@ -869,34 +1274,53 @@ non terminal IncDec, LoopKeyword;
 		RESULT = new Info(0, MyTab.noType);
 	}
 	else
+	{
+		MyCode.put(MyCode.newarray);
+		if (typeName.equals("char"))
+			MyCode.put(0);
+		else
+			MyCode.put(1);
 		RESULT = new Info(0, new MyStruct(Struct.Array, typeObj.getType()));
+	}
 :};
 
-/* 114 */ Factor ::= NEW IDENT LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong allocation expression", eleft); :};
-/* 115 */ Factor ::= LPAREN Expr:exprInfo RPAREN
+Factor ::= NEW IDENT LBRACKET error:e RBRACKET {: parser.reportRecoveredSyntaxError("Wrong allocation expression", eleft); :};
+
+Factor ::= LPAREN Expr:exprInfo RPAREN
 {:
 	RESULT = exprInfo;
 :};
 
+Addop ::= ADD {: RESULT = "+"; :};
+Addop ::= SUB {: RESULT = "-"; :};
 
-
-
-/* 121 */ Addop ::= ADD {: RESULT = "+"; :};
-/* 122 */ Addop ::= SUB {: RESULT = "-"; :};
-
-/* 123 */ Mulop ::= MUL {: RESULT = "*"; :};
-/* 124 */ Mulop ::= DIV {: RESULT = "/"; :};
-/* 125 */ Mulop ::= MOD {: RESULT = "%"; :};
+Mulop ::= MUL {: RESULT = "*"; :};
+Mulop ::= DIV {: RESULT = "/"; :};
+Mulop ::= MOD {: RESULT = "%"; :};
 		 
-/* 126 */ Relop ::= EQ {: RESULT = "=="; :};
-/* 126 */ Relop ::= NEQ {: RESULT = "!="; :};
-/* 126 */ Relop ::= GRT {: RESULT = ">"; :};
-/* 126 */ Relop ::= GRTE {: RESULT = ">="; :};
-/* 126 */ Relop ::= LESS {: RESULT = "<"; :};
-/* 126 */ Relop ::= LESSE {: RESULT = "<="; :};
+Relop ::= EQ {: RESULT = MyCode.eq; :};
+Relop ::= NEQ {: RESULT = MyCode.ne; :};
+Relop ::= GRT {: RESULT = MyCode.gt; :};
+Relop ::= GRTE {: RESULT = MyCode.ge; :};
+Relop ::= LESS {: RESULT = MyCode.lt; :};
+Relop ::= LESSE {: RESULT = MyCode.le; :};
 
+Value ::= NUMBER:value 		{: RESULT = new Info(value, MyTab.intType); :};
+Value ::= CHAR_CONST:value 	{: RESULT = new Info(value, MyTab.charType); :};
+Value ::= BOOL_CONST:value 	{: RESULT = new Info(value, MyTab.boolType); :};
+Value ::= STRING_CONST:value 
+{: 
+	int size = value.length() + 1;
+	MyCode.heapPutWord(size);
+	int addr = MyCode.heapSize;
+	for (int i = 0; i < value.length(); ++i)
+		MyCode.heapPutByte((byte)((int)value.charAt(i)));
+	MyCode.heapPutByte((byte)0);
+				
+	RESULT = new Info(addr, MyTab.stringType);
+:};
 
-/* 128 */ Type ::= IDENT:typeName
+Type ::= IDENT:typeName
 {:
 	Obj typeObjNode = MyTab.find(typeName);
 	if (typeObjNode == null || typeObjNode == MyTab.noObj)

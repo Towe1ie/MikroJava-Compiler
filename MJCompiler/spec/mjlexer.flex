@@ -33,6 +33,7 @@ import java_cup.runtime.Symbol;
 "\t" 	{ }
 "\r\n" 	{ }
 "\f" 	{ }
+"\n" 	{ }
 
 "program"	{ return newSymbol(sym.PROGRAM, yytext()); }
 "break"		{ return newSymbol(sym.BREAK, yytext()); }
@@ -82,6 +83,7 @@ import java_cup.runtime.Symbol;
 "//"				{ yybegin(COMMENT); }
 <COMMENT> .			{ yybegin(COMMENT); }
 <COMMENT> "\r\n" 	{ yybegin(YYINITIAL); }
+<COMMENT> "\n" 		{ yybegin(YYINITIAL); }
 
 (true|false)					{ return newSymbol(sym.BOOL_CONST, new Boolean(yytext())); }
 [0-9]+							{ return newSymbol(sym.NUMBER, new Integer(yytext())); }

@@ -1,20 +1,12 @@
 program TestProgam
-	const int konstanta = "kurcina";
-	int a;
-	
-	class Super 
-	{
-		int x, y, z;
-	}
-	
-	class Inherited extends Super
-	{
-	}
+bool b1, b2;
 {
-	int main(int a, int h)
-		int a, b, c, d;
+	void main()
 	{
-		b = a(2, 3);
-		return b;
+		b1 = true;
+		b2 = true;
+		if (b1 && b2)
+			print("then");
+		
 	}
 }
